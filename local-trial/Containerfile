@@ -1,0 +1,9 @@
+FROM docker.io/library/node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --chown=1000:1000 *.js *.json *.html *.css *.svg *.md /app/
+COPY --chown=1000:1000 library /app/library
+COPY --chown=1000:1000 icons /app/icons
+USER 1000:1000
+ENV FABLECUT_PUBLIC_ORIGIN=http://127.0.0.1:7787 HOST=0.0.0.0 PORT=7777 FABLECUT_DATA_DIR=/data FABLECUT_INPUT_ROOTS=/data FABLECUT_OFFLINE=1 HOME=/tmp
+CMD ["node", "server.js"]

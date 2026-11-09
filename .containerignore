@@ -1,0 +1,5 @@
+.git
+local-trial/data
+local-trial/private.env
+local-trial/.host
+node_modules

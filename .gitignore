@@ -35,3 +35,8 @@ pnpm-lock.yaml
 # Stored projects (the open one is ./project.json) and saved project templates
 /projects/
 /library/project-templates/
+
+/local-trial/data/
+/local-trial/private.env
+
+/local-trial/.host/

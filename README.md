@@ -686,3 +686,11 @@ Rather email? Write to [hello@fablecut.space](mailto:hello@fablecut.space), or
 ## License
 
 [MIT](LICENSE)
+
+## Local hardened trial
+
+This branch restricts input reads with `FABLECUT_INPUT_ROOTS` (path-delimited, realpath checked), rejects executable uploads, enforces same-port browser origins, and pins validated DNS addresses. `FABLECUT_OFFLINE=1` disables URL imports and external browser resources. Run via `local-trial/start.sh`; only the trial data folder is mounted writable, with a read-only container filesystem, resource limits, and an internal network. Copy footage into `local-trial/data/inbox` before importing `/data/inbox/<file>` through MCP. No home directories or credentials are mounted. Container browsers are omitted; export uses the user's open editor tab.
+
+Trial commands use Podman. Start: `./local-trial/start.sh`; stop: `./local-trial/stop.sh`; stdio MCP: `./local-trial/mcp.sh`. Open http://127.0.0.1:7787 and log in as `fablecut` using the locally generated `FABLECUT_TOKEN` from `local-trial/private.env`. Keep that file private. Remote imports, external AI model downloads, and headless container browser exports are unavailable in the offline trial. Native browser exports use the open editor tab. Rebuild the container image after code changes.
+
+The trial uses an authenticated localhost SSH tunnel to the Podman VM with host-key checking, no container port publication, and no default network route. `FABLECUT_PUBLIC_ORIGIN` explicitly permits the tunnel origin. `FABLECUT_TOKEN` enables HTTP Basic (`fablecut`) and Bearer authentication; never commit the generated environment file.

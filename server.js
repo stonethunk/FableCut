@@ -54,6 +54,7 @@ const { createHistory } = require("./history");
 /* Static app files are served from the install dir; everything the user creates
    lives under DATA_DIR. The two are the same unless FABLECUT_DATA_DIR is set. */
 const ROOT = APP_DIR;
+const { inside, allowedInput } = require("./local-security");
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -73,9 +74,15 @@ function hostAllowed(value) {
 }
 function requestAllowed(req) {
   if (!hostAllowed(req.headers.host)) return false;
+  if (["cross-site", "same-site"].includes(req.headers["sec-fetch-site"])) return false;
   const origin = req.headers.origin;
   if (origin) {
-    try { return hostAllowed(new URL(origin).host); } catch { return false; }
+    try {
+      const u = new URL(origin);
+      return process.env.FABLECUT_PUBLIC_ORIGIN
+        ? u.origin === process.env.FABLECUT_PUBLIC_ORIGIN
+        : u.protocol === "http:" && hostAllowed(u.host) && (u.port || "80") === String(PORT);
+    } catch { return false; }
   }
   return true;
 }
@@ -210,7 +217,7 @@ function resolveSrc(src) {
     : p.startsWith("/library/") ? [LIBRARY_DIR, p.slice(9)] : [null, null];
   if (!root || !rel) return null;
   const file = path.normalize(path.join(root, rel));
-  if (!file.startsWith(path.normalize(root + path.sep))) return null;
+  if (!inside(file, root)) return null;
   try { return fs.statSync(file).isFile() ? file : null; } catch { return null; }
 }
 
@@ -223,7 +230,8 @@ function resolveSrc(src) {
  *  is no traversal to defend. It is deliberately NOT how a src is resolved. */
 function resolvePathArg(p) {
   if (!p || typeof p !== "string") return null;
-  let file = path.resolve(p);
+  let file;
+  try { file = path.resolve(allowedInput(p)); } catch { return null; }
   try { return fs.statSync(file).isFile() ? file : null; } catch { return null; }
 }
 
@@ -554,12 +562,21 @@ const exportJobs = createExportJobs({
 });
 
 /* Static file with HTTP Range support (required for <video> seeking) */
-function serveFile(req, res, filePath) {
+function serveFile(req, res, filePath, allowedRoot = ROOT) {
+  if (!fs.existsSync(filePath)) { res.writeHead(404); res.end(); return; }
+  if (!inside(filePath, allowedRoot)) {
+    res.writeHead(403); res.end(); return;
+  }
+  // HTML and script files belong only to the trusted application, never user media.
+  if (allowedRoot !== ROOT && [".html", ".htm", ".js", ".mjs"].includes(path.extname(filePath).toLowerCase())) {
+    res.writeHead(403); res.end(); return;
+  }
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404); res.end("Not found"); return; }
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || "application/octet-stream";
-    const extra = {};
+    const extra = { "X-Content-Type-Options": "nosniff" };
+    if (process.env.FABLECUT_OFFLINE === "1") extra["Content-Security-Policy"] = "default-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
     if (ext === ".svg") {
       extra["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
       extra["X-Content-Type-Options"] = "nosniff";
@@ -588,12 +605,23 @@ function serveFile(req, res, filePath) {
 
 /* ── Server ── */
 const server = http.createServer(async (req, res) => {
+  if (process.env.FABLECUT_TOKEN) {
+    const bearer = "Bearer " + process.env.FABLECUT_TOKEN;
+    const basic = "Basic " + Buffer.from("fablecut:" + process.env.FABLECUT_TOKEN).toString("base64");
+    const hash = value => crypto.createHash("sha256").update(value).digest();
+    const actual = hash(req.headers.authorization || "");
+    if (!crypto.timingSafeEqual(actual, hash(bearer)) && !crypto.timingSafeEqual(actual, hash(basic))) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="FableCut local trial"', "Cache-Control": "no-store" });
+      res.end("Authentication required"); return;
+    }
+  }
   if (!requestAllowed(req)) {
     sendJSON(res, 403, { error: "forbidden: request must come from this machine (bad Host or Origin header)" });
     return;
   }
   const url = new URL(req.url, "http://localhost");
-  const p = decodeURIComponent(url.pathname);
+  let p;
+  try { p = decodeURIComponent(url.pathname); } catch { sendJSON(res, 400, { error: "invalid URL encoding" }); return; }
   // never serve dotfiles/dot-directories (.git, .gitignore, …)
   if (p.split(/[\\/]/).some((seg) => seg.startsWith("."))) { res.writeHead(403); res.end(); return; }
 
@@ -915,6 +943,7 @@ const server = http.createServer(async (req, res) => {
   if (p === "/api/upload" && req.method === "POST") {
     try {
       let name = safeName(url.searchParams.get("name") || "upload.bin");
+      if (!require("./import-url").kindFromName(name)) { sendJSON(res, 400, { error: "unsupported media type" }); return; }
       let target = path.join(MEDIA_DIR, name);
       let i = 1;
       const ext = path.extname(name), base = path.basename(name, ext);
@@ -1401,7 +1430,7 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/media/")) {
     const file = path.normalize(path.join(MEDIA_DIR, p.slice("/media/".length)));
     if (!file.startsWith(MEDIA_DIR + path.sep)) { res.writeHead(403); res.end(); return; }
-    serveFile(req, res, file);
+    serveFile(req, res, file, MEDIA_DIR);
     return;
   }
 
@@ -1409,13 +1438,13 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/proxies/")) {
     const file = proxies.file(p.slice("/proxies/".length));
     if (!file) { res.writeHead(404); res.end(); return; }
-    serveFile(req, res, file);
+    serveFile(req, res, file, PROXIES_DIR);
     return;
   }
 
   /* Finished exports */
   if (p.startsWith("/exports/")) {
-    serveFile(req, res, path.join(EXPORTS_DIR, path.basename(p)));
+    serveFile(req, res, path.join(EXPORTS_DIR, path.basename(p)), EXPORTS_DIR);
     return;
   }
 
@@ -1423,12 +1452,15 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/library/")) {
     const file = path.normalize(path.join(LIBRARY_DIR, p.slice("/library/".length)));
     if (!file.startsWith(LIBRARY_DIR + path.sep)) { res.writeHead(403); res.end(); return; }
-    serveFile(req, res, file);
+    serveFile(req, res, file, LIBRARY_DIR);
     return;
   }
 
   /* Static app files */
   let file = p === "/" ? "/index.html" : p;
+  if (!(/^\/[^/]+\.(js|css|html|svg|json)$/.test(file) || file.startsWith("/icons/"))) {
+    res.writeHead(404); res.end(); return;
+  }
   file = path.normalize(path.join(ROOT, file));
   if (!file.startsWith(ROOT + path.sep)) { res.writeHead(403); res.end(); return; }
   serveFile(req, res, file);

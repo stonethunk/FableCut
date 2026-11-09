@@ -80,7 +80,7 @@ async function startServer(t, dataDir, extraEnv = {}) {
     let ready = false;
     while (Date.now() < deadline && exited === null) {
       try {
-        const r = await fetch(base + "/api/project");
+        const r = await fetch(base + "/api/project", { headers: extraEnv.FABLECUT_TOKEN ? { Authorization: "Bearer " + extraEnv.FABLECUT_TOKEN } : {} });
         if (r.status === 200) { await r.text(); ready = true; break; }
       } catch { /* not listening yet */ }
       await new Promise((r) => setTimeout(r, 50));

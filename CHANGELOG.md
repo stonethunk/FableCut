@@ -1,3 +1,9 @@
+# Local security-hardening branch
+
+- Confine the trial to a non-root, read-only Podman container with a dedicated data mount and internal network; expose localhost via a verified VM SSH tunnel.
+- Add optional HTTP authentication and exact public-origin checks, approved input roots, symlink-safe serving, executable-upload rejection, DNS pinning, and offline browser policy.
+- Add security regression tests.
+
 # Changelog
 
 All notable changes to FableCut are documented here.

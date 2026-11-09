@@ -124,6 +124,7 @@ async function assertPublicTarget(u, { allowLoopback = false } = {}) {
   for (const a of addrs) {
     if (isBlockedIp(a.address)) throw new Error("blocked: host resolves to a private address");
   }
+  return addrs;
 }
 
 function filenameFrom(u, headers) {
@@ -148,7 +149,7 @@ function filenameFrom(u, headers) {
   return safeName(base);
 }
 
-function requestOnce(u, { signal, timeoutMs }) {
+function requestOnce(u, { signal, timeoutMs, addresses }) {
   const lib = u.protocol === "https:" ? https : http;
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const opts = {
@@ -157,6 +158,11 @@ function requestOnce(u, { signal, timeoutMs }) {
     port: u.port || undefined,
     path: u.pathname + u.search,
     method: "GET",
+    lookup: addresses ? (_host, options, cb) => {
+      if (typeof options === "function") { cb = options; options = {}; }
+      if (options.all) cb(null, addresses);
+      else cb(null, addresses[0].address, addresses[0].family);
+    } : undefined,
     headers: { "User-Agent": "FableCut", Accept: "*/*" },
   };
   if (u.protocol === "https:" && !net.isIP(host)) opts.servername = host;
@@ -239,6 +245,7 @@ function saveResponse(res, u, destDir, { signal, maxBytes }) {
 }
 
 async function downloadImportUrl(raw, destDir, opts = {}) {
+  if (process.env.FABLECUT_OFFLINE === "1") throw new Error("remote imports disabled in isolated trial");
   const allowLoopback = !!opts.allowLoopback;
   const maxBytes = opts.maxBytes || MAX_BYTES;
   const timeoutMs = opts.timeoutMs || TIMEOUT_MS;
@@ -246,8 +253,8 @@ async function downloadImportUrl(raw, destDir, opts = {}) {
   let current = parseImportUrl(raw, { allowLoopback });
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (signal?.aborted) throw Object.assign(new Error("aborted"), { code: "ABORT_ERR" });
-    await assertPublicTarget(current, { allowLoopback });
-    const res = await requestOnce(current, { signal, timeoutMs });
+    const addresses = await assertPublicTarget(current, { allowLoopback });
+    const res = await requestOnce(current, { signal, timeoutMs, addresses });
     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
       res.resume();
       let next;

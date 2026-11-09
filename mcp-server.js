@@ -47,8 +47,10 @@ const savedItems = (kind) => readSaved(kind).map((x) => (kind === "presets" ? Te
 /* ROOT is where the code lives (server.js, CLAUDE.md); the user's timeline and
    media live under DATA_DIR. Identical unless FABLECUT_DATA_DIR is set. */
 const ROOT = APP_DIR;
+const { allowedInput, inside } = require("./local-security");
 ensureDirs();
-const PORT = process.env.FABLECUT_PORT || 7777;
+const PORT = process.env.FABLECUT_PORT || process.env.PORT || 7777;
+const authHeaders = process.env.FABLECUT_TOKEN ? { Authorization: "Bearer " + process.env.FABLECUT_TOKEN } : {};
 const BASE = `http://localhost:${PORT}`;
 // Requests go to the address the server binds: on Node 18, "localhost" can
 // resolve to ::1 first and is not retried on 127.0.0.1.
@@ -80,7 +82,7 @@ function writeProject(doc) {
 let lastReadRevision = null;
 function httpOk(url) {
   return new Promise((resolve) => {
-    const req = http.get(url, (r) => { r.resume(); resolve(r.statusCode < 500); });
+    const req = http.get(url, { headers: authHeaders }, (r) => { r.resume(); resolve(r.statusCode === 200); });
     req.on("error", () => resolve(false));
     req.setTimeout(1200, () => { req.destroy(); resolve(false); });
   });
@@ -89,7 +91,7 @@ function httpOk(url) {
  *  endpoints that gate on them — /api/frame?path= needs X-FableCut-Client. */
 function apiJSON(method, urlPath, payload, headers) {
   return new Promise((resolve, reject) => {
-    const req = http.request(API + urlPath, { method, headers: { "Content-Type": "application/json", ...headers } }, (r) => {
+    const req = http.request(API + urlPath, { method, headers: { "Content-Type": "application/json", ...authHeaders, ...headers } }, (r) => {
       let data = "";
       r.setEncoding("utf8");
       r.on("data", (d) => { data += d; });
@@ -535,7 +537,7 @@ function mediaFile(src) {
     : p.startsWith("/library/") ? [LIBRARY_DIR, p.slice(9)] : [null, null];
   if (!root) return null;
   const file = path.normalize(path.join(root, rel));
-  return file.startsWith(path.normalize(root + path.sep)) && fs.existsSync(file) ? file : null;
+  return inside(file, root) ? file : null;
 }
 /** Source seconds a clip consumes: duration × speed, integrating speed keyframes. */
 function clipSourceLen(c) {
@@ -1089,7 +1091,7 @@ async function captionsTool(args) {
     if (asFile) {
       const file = text.startsWith("/media/") ? path.join(MEDIA_DIR, decodeURIComponent(text.slice(7))) : path.resolve(text);
       if (!fs.existsSync(file)) throw new Error("no such subtitle file: " + text);
-      text = fs.readFileSync(file, "utf8");
+      text = fs.readFileSync(allowedInput(file), "utf8");
     }
     list = C.fit(C.parse(text), m.chars, m.lines);
     sig = timelineSig(first);
@@ -1400,7 +1402,7 @@ function imageBlockFromDataUrl(url) {
  *  arbitrary files nor probe which ones exist. */
 function apiBytes(urlPath) {
   return new Promise((resolve, reject) => {
-    const req = http.request(API + urlPath, { method: "GET", headers: { "X-FableCut-Client": "mcp" } }, (r) => {
+    const req = http.request(API + urlPath, { method: "GET", headers: { ...authHeaders, "X-FableCut-Client": "mcp" } }, (r) => {
       const chunks = [];
       r.on("data", (c) => chunks.push(c));
       r.on("end", () => resolve({ status: r.statusCode, headers: r.headers, body: Buffer.concat(chunks) }));
@@ -1464,7 +1466,7 @@ async function frameTool(args) {
   if (!served && (!fs.existsSync(raw) || !fs.statSync(raw).isFile()))
     throw new Error("File not found: " + raw);
 
-  const q = new URLSearchParams(served ? { src: raw } : { path: path.resolve(raw) });
+  const q = new URLSearchParams(served ? { src: raw } : { path: path.resolve(allowedInput(raw)) });
   if (args.frames != null) {
     q.set("frames", String(Math.round(Number(args.frames))));
     // No cols → the server picks the squarest layout (6 frames give 3×2).
@@ -1867,6 +1869,8 @@ async function callTool(name, args, attempt = 0) {
         : src;
       if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile())
         throw new Error("File not found: " + src);
+      allowedInput(file);
+      if (!KIND_BY_EXT[path.extname(file).toLowerCase()]) throw new Error("Unsupported reference media type");
       // keep the reference inside media/ so the user can preview it in the UI
       if (path.dirname(path.resolve(file)).toLowerCase() !== MEDIA_DIR.toLowerCase()) {
         if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
@@ -1924,6 +1928,7 @@ async function callTool(name, args, attempt = 0) {
       } else {
         if (!fs.existsSync(src) || !fs.statSync(src).isFile())
           throw new Error("File not found: " + src);
+        allowedInput(src);
         const ext = path.extname(src).toLowerCase();
         kind = KIND_BY_EXT[ext];
         if (!kind) throw new Error(`Unsupported extension ${ext}`);
